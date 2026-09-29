@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -664,7 +665,8 @@ if __name__ == "__main__":
     run_mode: Literal["tournament", "metaculus_cup", "test_questions"] = args.mode
 
     check_environment(strict=True)
-    publish_to_metaculus = True
+    # MakeMoney E-001: DRY_RUN=1 forecasts without posting to Metaculus.
+    publish_to_metaculus = os.getenv("DRY_RUN") != "1"
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
 
     # Configure the bot. The `llms=` block below is commented out to use
@@ -678,24 +680,38 @@ if __name__ == "__main__":
         folder_to_save_reports_to=None,
         skip_previously_forecasted_questions=True,
         extra_metadata_in_explanation=True,
-        # llms={
-        #     "default": GeneralLlm(
-        #         model="openrouter/openai/gpt-4o",
-        #         temperature=0.3,
-        #         timeout=40,
-        #         allowed_tries=2,
-        #     ),
-        #     "summarizer": "openai/gpt-4o-mini",
-        #     "researcher": "asknews/news-summaries",
-        #     "parser": "openai/gpt-4o-mini",
-        # },
+        # MakeMoney E-001: pinned models, all through one OpenRouter key.
+        # Metaculus's donated OpenRouter credits cover only OpenAI, Anthropic
+        # and Google, so research uses Claude's own web search (":online")
+        # instead of Perplexity.
+        llms={
+            "default": GeneralLlm(
+                model="openrouter/anthropic/claude-sonnet-5",
+                temperature=0.3,
+                timeout=120,
+                allowed_tries=2,
+            ),
+            "summarizer": "openrouter/openai/gpt-5-mini",
+            "researcher": GeneralLlm(
+                model="openrouter/anthropic/claude-sonnet-5:online",
+                temperature=0.1,
+                timeout=120,
+                allowed_tries=2,
+            ),
+            "parser": "openrouter/openai/gpt-5-mini",
+        },
     )
+
+    # MakeMoney E-001: forecasting-tools 0.2.92 still points
+    # CURRENT_AI_COMPETITION_ID at Summer 2026 (33022), which closed on 6 Sep.
+    # Slug taken from Metaculus's own site source (futureeval-tournaments.tsx).
+    FALL_2026_TOURNAMENT = "fall-futureeval-2026"
 
     # Per-mode tournament URL shown in the summary banner footer. These
     # piggyback on the forecasting_tools SDK constants and need updating
     # whenever those rotate seasons.
     TOURNAMENT_URLS = {
-        "tournament": "https://www.metaculus.com/tournament/summer-futureeval-2026/",
+        "tournament": f"https://www.metaculus.com/tournament/{FALL_2026_TOURNAMENT}/",
         "metaculus_cup": "https://www.metaculus.com/tournament/metaculus-cup-summer-2025/",
         "test_questions": "https://www.metaculus.com/tournament/bot-testing-area/",
     }
@@ -707,7 +723,7 @@ if __name__ == "__main__":
     if run_mode == "tournament":
         seasonal_tournament_reports = asyncio.run(
             template_bot.forecast_on_tournament(
-                client.CURRENT_AI_COMPETITION_ID, return_exceptions=True
+                FALL_2026_TOURNAMENT, return_exceptions=True
             )
         )
         minibench_reports = asyncio.run(

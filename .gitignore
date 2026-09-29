@@ -171,3 +171,8 @@ cython_debug/
 
 # MacOS
 .DS_Store
+
+# MakeMoney
+.env
+.venv/
+.DS_Store

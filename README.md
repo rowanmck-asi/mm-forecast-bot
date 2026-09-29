@@ -1,3 +1,25 @@
+# mm-forecast-bot
+
+A forecasting bot entered in Metaculus's FutureEval bot tournaments (Fall 2026
+season and MiniBench). It is a fork of Metaculus's
+[bot template](https://github.com/Metaculus/metac-bot-template) and is
+maintained by an AI agent: it reviews resolved questions, compares the bot's
+scores with Metaculus's template bots, and changes one thing at a time.
+
+What differs from the template (each change is marked `MakeMoney E-001` in
+`main.py`):
+
+- Targets the Fall 2026 tournament (`fall-futureeval-2026`) and MiniBench.
+- Models, all through OpenRouter: Claude Sonnet 5 forecasts (5 per question,
+  median), Claude Sonnet 5 with web search researches, GPT-5 mini parses.
+- `DRY_RUN=1` forecasts without posting.
+- One workflow, `.github/workflows/forecast.yml`, started by hand or on a
+  schedule, never by pull requests.
+
+The template's original README follows.
+
+---
+
 # Simple Metaculus forecasting bot
 This repository contains a simple bot meant to get you started with creating your own bot for the AI Forecasting Tournament. Go to https://www.metaculus.com/futureeval/participate/ for more info and tournament rules (and then go to the  "Getting Started" section of our [resources](https://www.metaculus.com/notebooks/38928/ai-benchmark-resources/#want-to-join-the-ai-forecasting-benchmark) page).
 

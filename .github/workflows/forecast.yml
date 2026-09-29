@@ -1,0 +1,47 @@
+name: Forecast
+
+# Runs only when started by hand or on the schedule. No pull-request triggers,
+# so code from other people's pull requests never runs with this repo's secrets.
+# The hourly schedule stays off until the bot has an AI key.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "tournament, test_questions or metaculus_cup"
+        default: "test_questions"
+      dry_run:
+        description: "1 = forecast without posting"
+        default: "1"
+  # schedule:
+  #   - cron: "17 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: forecast
+  cancel-in-progress: false
+
+jobs:
+  forecast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install "poetry==2.1.3"
+      - run: poetry config virtualenvs.in-project true
+      - uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py311-${{ hashFiles('poetry.lock') }}
+      - run: poetry install --no-interaction --no-root
+      - run: poetry run python main.py --mode "${{ github.event.inputs.mode || 'tournament' }}"
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
