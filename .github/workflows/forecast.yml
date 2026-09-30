@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "tournament, test_questions or metaculus_cup"
+        description: "tournament (FutureEval, MiniBench, Market Pulse), market_pulse, test_questions or metaculus_cup"
         default: "test_questions"
       dry_run:
         description: "1 = forecast without posting"

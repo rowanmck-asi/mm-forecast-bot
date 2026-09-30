@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 import dotenv
+import requests
 
 # Runtime helpers (env validation, banners, dependency-warning suppression).
 from bot_helpers import (
@@ -32,6 +33,7 @@ from forecasting_tools import (
     Percentile,
     ConditionalQuestion,
     ConditionalPrediction,
+    ForecastReport,
     PredictionTypes,
     PredictionAffirmed,
     BinaryPrediction,
@@ -647,6 +649,97 @@ class SummerTemplateBot2026(ForecastBot):
         )
 
 
+# MakeMoney E-001: Metaculus's quarterly Market Pulse Challenge (US$7,500,
+# bots eligible for prizes). Its questions are mostly groups of numeric and
+# discrete questions that stay open for days, so the bot re-forecasts them.
+# Scoring is time-averaged, so a stale forecast costs points. Each run
+# forecasts new questions first, then the oldest forecasts, up to a cap that
+# bounds AI spend per run.
+MARKET_PULSE_REFORECAST_HOURS = float(
+    os.getenv("MARKET_PULSE_REFORECAST_HOURS") or 48
+)
+MARKET_PULSE_MAX_PER_RUN = int(os.getenv("MARKET_PULSE_MAX_PER_RUN") or 12)
+
+
+def current_market_pulse_tournaments(
+    client: MetaculusClient, now: datetime | None = None
+) -> list[int]:
+    """Ids of Market Pulse tournaments open now whose prizes bots can win.
+
+    Found from Metaculus's tournament list each run, so a new quarter is
+    picked up without a code change. Near a quarter boundary two can be open.
+    """
+    now = now or datetime.now(timezone.utc)
+    response = requests.get(
+        f"{client.base_url}/projects/tournaments/",
+        **client._get_auth_headers(),  # type: ignore
+        timeout=30,
+    )
+    response.raise_for_status()
+    ids = []
+    for tournament in response.json():
+        if not str(tournament.get("slug", "")).startswith("market-pulse-"):
+            continue
+        if tournament.get("bot_leaderboard_status") != "include":
+            continue
+        start = tournament.get("start_date")
+        close = tournament.get("close_date")
+        if not start or not close:
+            continue
+        start_time = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        close_time = datetime.fromisoformat(close.replace("Z", "+00:00"))
+        if start_time <= now < close_time:
+            ids.append(tournament["id"])
+    return ids
+
+
+def market_pulse_questions_due(
+    questions: list[MetaculusQuestion],
+    now: datetime | None = None,
+    reforecast_hours: float = MARKET_PULSE_REFORECAST_HOURS,
+    max_questions: int = MARKET_PULSE_MAX_PER_RUN,
+) -> list[MetaculusQuestion]:
+    """New questions first, then forecasts older than reforecast_hours,
+    oldest first, at most max_questions."""
+    now = now or datetime.now(timezone.utc)
+    cutoff = now.timestamp() - reforecast_hours * 3600
+    never = [q for q in questions if not q.already_forecasted]
+    stale = []
+    for q in questions:
+        if not q.already_forecasted:
+            continue
+        last = q.timestamp_of_my_last_forecast
+        if last is None or last.timestamp() <= cutoff:
+            stale.append((last.timestamp() if last else 0.0, q))
+    stale.sort(key=lambda pair: pair[0])
+    return (never + [q for _, q in stale])[:max_questions]
+
+
+async def forecast_on_market_pulse(
+    bot: ForecastBot, client: MetaculusClient
+) -> list[ForecastReport | BaseException]:
+    tournament_ids = current_market_pulse_tournaments(client)
+    if not tournament_ids:
+        logger.info("Market Pulse: no tournament open to bots right now")
+        return []
+    questions: list[MetaculusQuestion] = []
+    for tournament_id in tournament_ids:
+        # Groups are unpacked into one question per subquestion.
+        questions += client.get_all_open_questions_from_tournament(tournament_id)
+    due = market_pulse_questions_due(questions)
+    logger.info(
+        f"Market Pulse {tournament_ids}: {len(questions)} open, "
+        f"{len(due)} due (new or last forecast over "
+        f"{MARKET_PULSE_REFORECAST_HOURS:g}h old, cap {MARKET_PULSE_MAX_PER_RUN})"
+    )
+    skip_setting = bot.skip_previously_forecasted_questions
+    bot.skip_previously_forecasted_questions = False
+    try:
+        return await bot.forecast_questions(due, return_exceptions=True)
+    finally:
+        bot.skip_previously_forecasted_questions = skip_setting
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
@@ -657,12 +750,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["tournament", "metaculus_cup", "test_questions"],
+        choices=["tournament", "market_pulse", "metaculus_cup", "test_questions"],
         default="tournament",
         help="What to forecast on (default: tournament)",
     )
     args = parser.parse_args()
-    run_mode: Literal["tournament", "metaculus_cup", "test_questions"] = args.mode
+    run_mode: Literal[
+        "tournament", "market_pulse", "metaculus_cup", "test_questions"
+    ] = args.mode
 
     check_environment(strict=True)
     # MakeMoney E-001: DRY_RUN=1 forecasts without posting to Metaculus.
@@ -712,6 +807,7 @@ if __name__ == "__main__":
     # whenever those rotate seasons.
     TOURNAMENT_URLS = {
         "tournament": f"https://www.metaculus.com/tournament/{FALL_2026_TOURNAMENT}/",
+        "market_pulse": "https://www.metaculus.com/tournaments/",
         "metaculus_cup": "https://www.metaculus.com/tournament/metaculus-cup-summer-2025/",
         "test_questions": "https://www.metaculus.com/tournament/bot-testing-area/",
     }
@@ -731,7 +827,15 @@ if __name__ == "__main__":
                 client.CURRENT_MINIBENCH_ID, return_exceptions=True
             )
         )
-        forecast_reports = seasonal_tournament_reports + minibench_reports
+        # MakeMoney E-001: Market Pulse rides on the same hourly run.
+        market_pulse_reports = asyncio.run(
+            forecast_on_market_pulse(template_bot, client)
+        )
+        forecast_reports = (
+            seasonal_tournament_reports + minibench_reports + market_pulse_reports
+        )
+    elif run_mode == "market_pulse":
+        forecast_reports = asyncio.run(forecast_on_market_pulse(template_bot, client))
     elif run_mode == "metaculus_cup":
         # The Metaculus Cup may be uninitialized near the start of a season
         # (Jan/May/Sep). AXC_2025_TOURNAMENT_ID = 32564 and
